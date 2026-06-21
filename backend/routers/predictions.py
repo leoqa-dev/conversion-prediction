@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -6,9 +6,51 @@ from database import get_db
 from models import User, UserBehavior, PredictionResult
 from schemas import PredictionOut, BatchScoreRequest, BatchScoreResponse, BatchScoreItem, Role
 from auth import get_current_user, filter_predictions_by_role
-from ml.scorer import score_behavior, classify_segment
+from ml.scorer import score_behavior, classify_segment, WEIGHTS
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
+
+REQUIRED_DETAIL_FIELDS = {"raw_value", "normalized_value", "weight"}
+
+def validate_feature_details(feature_details: Dict[str, Any]) -> None:
+    if not isinstance(feature_details, dict):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="feature_details must be a dictionary"
+        )
+    expected_features = set(WEIGHTS.keys())
+    actual_features = set(feature_details.keys())
+    if actual_features != expected_features:
+        missing = expected_features - actual_features
+        extra = actual_features - expected_features
+        msg_parts = []
+        if missing:
+            msg_parts.append(f"missing features: {sorted(missing)}")
+        if extra:
+            msg_parts.append(f"unexpected features: {sorted(extra)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"feature_details structure incomplete: {', '.join(msg_parts)}"
+        )
+    for feat_name, detail in feature_details.items():
+        if not isinstance(detail, dict):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"feature '{feat_name}' detail must be a dictionary"
+            )
+        detail_fields = set(detail.keys())
+        if detail_fields != REQUIRED_DETAIL_FIELDS:
+            missing = REQUIRED_DETAIL_FIELDS - detail_fields
+            extra = detail_fields - REQUIRED_DETAIL_FIELDS
+            msg_parts = [f"feature '{feat_name}'"]
+            if missing:
+                msg_parts.append(f"missing fields: {sorted(missing)}")
+            if extra:
+                msg_parts.append(f"unexpected fields: {sorted(extra)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"feature_details structure incomplete: {', '.join(msg_parts)}"
+            )
 
 @router.post("/score/{behavior_id}", response_model=PredictionOut, status_code=201)
 def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -20,7 +62,7 @@ def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = 
     b = db.query(UserBehavior).filter(UserBehavior.id == behavior_id).first()
     if not b:
         raise HTTPException(status_code=404, detail="Behavior record not found")
-    probability, weights = score_behavior(
+    probability, weights, feature_details = score_behavior(
         page_views=b.page_views,
         session_duration=b.session_duration,
         clicks=b.clicks,
@@ -30,6 +72,7 @@ def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = 
         search_queries=b.search_queries,
         days_since_last_visit=b.days_since_last_visit,
     )
+    validate_feature_details(feature_details)
     segment = classify_segment(probability)
     result = PredictionResult(
         user_id=b.user_id,
@@ -37,6 +80,7 @@ def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = 
         score=probability,
         segment=segment,
         feature_weights=weights,
+        feature_details=feature_details,
     )
     db.add(result)
     db.commit()
@@ -136,7 +180,7 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
 
             b = behavior_map[bid]
             try:
-                probability, weights = score_behavior(
+                probability, weights, feature_details = score_behavior(
                     page_views=b.page_views,
                     session_duration=b.session_duration,
                     clicks=b.clicks,
@@ -146,6 +190,7 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
                     search_queries=b.search_queries,
                     days_since_last_visit=b.days_since_last_visit,
                 )
+                validate_feature_details(feature_details)
                 segment = classify_segment(probability)
                 result = PredictionResult(
                     user_id=b.user_id,
@@ -153,9 +198,12 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
                     score=probability,
                     segment=segment,
                     feature_weights=weights,
+                    feature_details=feature_details,
                 )
                 created_predictions.append((bid, result))
                 scored_count += 1
+            except HTTPException:
+                raise
             except Exception as e:
                 raise RuntimeError(f"Failed to score behavior {bid}: {str(e)}")
 

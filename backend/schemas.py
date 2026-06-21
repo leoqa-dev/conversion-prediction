@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from enum import Enum
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_serializer
 
 class Role(str, Enum):
     admin = "admin"
@@ -65,6 +65,11 @@ class BehaviorOut(BaseModel):
     recorded_at: datetime
     model_config = {"from_attributes": True}
 
+class FeatureDetail(BaseModel):
+    raw_value: Any
+    normalized_value: float
+    weight: float
+
 class PredictionOut(BaseModel):
     id: int
     user_id: int
@@ -72,8 +77,15 @@ class PredictionOut(BaseModel):
     score: float
     segment: str
     feature_weights: Optional[dict]
+    feature_details: Optional[Dict[str, FeatureDetail]] = None
     predicted_at: datetime
     model_config = {"from_attributes": True}
+
+    @field_serializer("feature_details")
+    def serialize_feature_details(self, v: Optional[Dict[str, FeatureDetail]]) -> Dict[str, Any]:
+        if v is None:
+            return {}
+        return {k: fd.model_dump() for k, fd in v.items()}
 
 class ReportSummary(BaseModel):
     total_users: int

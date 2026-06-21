@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Any
 
 WEIGHTS = {
     "purchases": 0.35,
@@ -35,7 +35,7 @@ def score_behavior(
     cart_adds: int,
     search_queries: int,
     days_since_last_visit: float,
-) -> Tuple[float, Dict[str, float]]:
+) -> Tuple[float, Dict[str, float], Dict[str, Dict[str, Any]]]:
     raw = {
         "purchases": purchases,
         "cart_adds": cart_adds,
@@ -51,9 +51,27 @@ def score_behavior(
         page_views + session_duration + clicks + email_opens
         + purchases + cart_adds + search_queries
     )
+
+    feature_details: Dict[str, Dict[str, Any]] = {}
+
     if active_behavior_sum == 0:
         feature_weights = {k: 0.0 for k in WEIGHTS}
-        return 0.0, feature_weights
+        for k in WEIGHTS:
+            normalized = min(raw[k] / NORMALIZERS[k], 1.0)
+            feature_details[k] = {
+                "raw_value": raw[k],
+                "normalized_value": round(normalized, 4),
+                "weight": WEIGHTS[k],
+            }
+        return 0.0, feature_weights, feature_details
+
+    for k in WEIGHTS:
+        normalized = min(raw[k] / NORMALIZERS[k], 1.0)
+        feature_details[k] = {
+            "raw_value": raw[k],
+            "normalized_value": round(normalized, 4),
+            "weight": WEIGHTS[k],
+        }
 
     linear = sum(
         WEIGHTS[k] * min(raw[k] / NORMALIZERS[k], 1.0)
@@ -61,7 +79,7 @@ def score_behavior(
     )
     score = round(float(_sigmoid(linear * 6 - 2)), 4)
     feature_weights = {k: round(WEIGHTS[k] * min(raw[k] / NORMALIZERS[k], 1.0), 4) for k in WEIGHTS}
-    return score, feature_weights
+    return score, feature_weights, feature_details
 
 def classify_segment(score: float) -> str:
     if score >= 0.70:

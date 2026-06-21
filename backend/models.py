@@ -37,5 +37,6 @@ class PredictionResult(Base):
     score = Column(Float, nullable=False)
     segment = Column(String, nullable=False)
     feature_weights = Column(JSON, nullable=True)
+    feature_details = Column(JSON, nullable=True)
     predicted_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="predictions")

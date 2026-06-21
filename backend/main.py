@@ -7,8 +7,19 @@ from routers.users import router as users_router
 from routers.behaviors import router as behaviors_router
 from routers.predictions import router as predictions_router
 from routers.reports import router as reports_router
+from sqlalchemy import text
 
 Base.metadata.create_all(bind=engine)
+
+def _migrate_add_feature_details_column():
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(prediction_results)"))
+        columns = [row[1] for row in result.fetchall()]
+        if "feature_details" not in columns:
+            conn.execute(text("ALTER TABLE prediction_results ADD COLUMN feature_details JSON"))
+            conn.commit()
+
+_migrate_add_feature_details_column()
 
 app = FastAPI(title="Conversion Prediction API")
 
