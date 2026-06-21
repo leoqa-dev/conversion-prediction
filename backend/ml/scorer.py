@@ -46,6 +46,15 @@ def score_behavior(
         "search_queries": search_queries,
         "days_since_last_visit": days_since_last_visit,
     }
+
+    active_behavior_sum = (
+        page_views + session_duration + clicks + email_opens
+        + purchases + cart_adds + search_queries
+    )
+    if active_behavior_sum == 0:
+        feature_weights = {k: 0.0 for k in WEIGHTS}
+        return 0.0, feature_weights
+
     linear = sum(
         WEIGHTS[k] * min(raw[k] / NORMALIZERS[k], 1.0)
         for k in WEIGHTS
