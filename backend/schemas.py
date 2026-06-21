@@ -65,6 +65,19 @@ class BehaviorOut(BaseModel):
     recorded_at: datetime
     model_config = {"from_attributes": True}
 
+class BehaviorBrief(BaseModel):
+    id: int
+    page_views: int
+    session_duration: float
+    clicks: int
+    email_opens: int
+    purchases: int
+    cart_adds: int
+    search_queries: int
+    days_since_last_visit: float
+    recorded_at: datetime
+    model_config = {"from_attributes": True}
+
 class FeatureDetail(BaseModel):
     raw_value: Any
     normalized_value: float
@@ -78,6 +91,7 @@ class PredictionOut(BaseModel):
     segment: str
     feature_weights: Optional[dict]
     feature_details: Optional[Dict[str, FeatureDetail]] = None
+    behavior: Optional[BehaviorBrief] = None
     predicted_at: datetime
     model_config = {"from_attributes": True}
 

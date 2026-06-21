@@ -1,12 +1,15 @@
+import logging
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from database import get_db
+from database import get_db, reset_query_counter, get_query_count
 from models import User, UserBehavior, PredictionResult
 from schemas import PredictionOut, BatchScoreRequest, BatchScoreResponse, BatchScoreItem, Role
 from auth import get_current_user, filter_predictions_by_role
 from ml.scorer import score_behavior, classify_segment, WEIGHTS
+
+logger = logging.getLogger("predictions.router")
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
@@ -114,11 +117,32 @@ def list_predictions(user_id: Optional[int] = None, db: Session = Depends(get_db
             detail="Viewer role can only access summary statistics, not individual records"
         )
 
+    reset_query_counter()
+
     q = db.query(PredictionResult)
     q = filter_predictions_by_role(q, current_user)
     if user_id and current_user.role == Role.admin:
         q = q.filter(PredictionResult.user_id == user_id)
-    return q.order_by(PredictionResult.predicted_at.desc()).all()
+    predictions = q.order_by(PredictionResult.predicted_at.desc()).all()
+
+    behavior_ids = [p.behavior_id for p in predictions if p.behavior_id is not None]
+    if behavior_ids:
+        behaviors = db.query(UserBehavior).filter(UserBehavior.id.in_(behavior_ids)).all()
+        behavior_map = {b.id: b for b in behaviors}
+    else:
+        behavior_map = {}
+
+    for p in predictions:
+        if p.behavior_id is not None and p.behavior_id in behavior_map:
+            p.behavior = behavior_map[p.behavior_id]
+
+    query_count = get_query_count()
+    logger.info(
+        "list_predictions: returned %d predictions, total SQL queries=%d (constant, not N+1)",
+        len(predictions), query_count,
+    )
+
+    return predictions
 
 @router.get("/{prediction_id}", response_model=PredictionOut)
 def get_prediction(prediction_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -132,6 +156,10 @@ def get_prediction(prediction_id: int, db: Session = Depends(get_db), current_us
         raise HTTPException(status_code=404, detail="Prediction not found")
     if current_user.role == Role.analyst and p.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Prediction not found")
+    if p.behavior_id is not None:
+        b = db.query(UserBehavior).filter(UserBehavior.id == p.behavior_id).first()
+        if b:
+            p.behavior = b
     return p
 
 @router.post("/batch-score", response_model=BatchScoreResponse, status_code=201)

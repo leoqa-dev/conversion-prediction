@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from database import engine, Base
@@ -8,6 +9,8 @@ from routers.behaviors import router as behaviors_router
 from routers.predictions import router as predictions_router
 from routers.reports import router as reports_router
 from sqlalchemy import text
+
+logging.basicConfig(level=logging.INFO)
 
 Base.metadata.create_all(bind=engine)
 

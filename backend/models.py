@@ -40,3 +40,4 @@ class PredictionResult(Base):
     feature_details = Column(JSON, nullable=True)
     predicted_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="predictions")
+    behavior = relationship("UserBehavior", lazy="noload")
