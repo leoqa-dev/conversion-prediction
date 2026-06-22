@@ -1,15 +1,17 @@
 import logging
 import time
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from database import get_db, reset_query_counter, get_query_count
-from models import User, UserBehavior, PredictionResult
-from schemas import PredictionOut, BatchScoreRequest, BatchScoreResponse, BatchScoreItem, Role
-from auth import get_current_user, filter_predictions_by_role
-from ml.scorer import score_behavior, classify_segment, WEIGHTS
+
+from auth import filter_predictions_by_role, get_current_user
+from database import get_db, get_query_count, reset_query_counter
+from ml.scorer import WEIGHTS, classify_segment, score_behavior
+from models import PredictionResult, User, UserBehavior
+from schemas import BatchScoreItem, BatchScoreRequest, BatchScoreResponse, PredictionOut, Role
 
 logger = logging.getLogger("predictions.router")
 
@@ -70,6 +72,7 @@ def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = 
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Viewer role cannot perform scoring operations"
         )
+    api_start = time.perf_counter()
     b = db.query(UserBehavior).filter(UserBehavior.id == behavior_id).first()
     if not b:
         raise HTTPException(status_code=404, detail="Behavior record not found")
@@ -100,15 +103,11 @@ def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = 
         db.commit()
     except IntegrityError:
         db.rollback()
+        api_elapsed_ms = (time.perf_counter() - api_start) * 1000
         logger.warning(
-            "Duplicate score blocked by unique constraint: user_id=%d, behavior_id=%d, score_bucket=%d (window=%ds)",
-            b.user_id, b.id, score_bucket, SCORE_WINDOW_SECONDS,
+            "Duplicate score blocked by unique constraint: user_id=%d, behavior_id=%d, score_bucket=%d (window=%ds) | total_api_time=%.3f ms",
+            b.user_id, b.id, score_bucket, SCORE_WINDOW_SECONDS, api_elapsed_ms,
         )
-        existing = db.query(PredictionResult).filter(
-            PredictionResult.user_id == b.user_id,
-            PredictionResult.behavior_id == b.id,
-            PredictionResult.score_bucket == score_bucket,
-        ).first()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -118,6 +117,12 @@ def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = 
             ),
         ) from None
     db.refresh(result)
+    result.behavior = b
+    api_elapsed_ms = (time.perf_counter() - api_start) * 1000
+    logger.info(
+        "POST /predictions/score/%d completed in %.3f ms | user_id=%d | score=%.4f | segment=%s",
+        behavior_id, api_elapsed_ms, b.user_id, probability, segment,
+    )
     return result
 
 @router.get("/summary")
@@ -199,6 +204,7 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Viewer role cannot perform scoring operations"
         )
+    api_start = time.perf_counter()
     behavior_ids = list(dict.fromkeys(payload.behavior_ids))
     results: List[BatchScoreItem] = []
     scored_count = 0
@@ -214,11 +220,13 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
         ).all()
         existing_behavior_ids = {p.behavior_id for p in existing}
 
+        failed_items = []
+        skipped_items = []
         created_predictions = []
         for bid in behavior_ids:
             if bid not in behavior_map:
                 failed_count += 1
-                results.append(BatchScoreItem(
+                failed_items.append(BatchScoreItem(
                     behavior_id=bid,
                     status="failed",
                     message="Behavior record not found"
@@ -228,7 +236,9 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
             if bid in existing_behavior_ids:
                 skipped_count += 1
                 existing_pred = next((p for p in existing if p.behavior_id == bid), None)
-                results.append(BatchScoreItem(
+                if existing_pred and existing_pred.behavior_id is not None:
+                    existing_pred.behavior = behavior_map.get(existing_pred.behavior_id)
+                skipped_items.append(BatchScoreItem(
                     behavior_id=bid,
                     status="skipped",
                     prediction=existing_pred,
@@ -260,30 +270,26 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
                     feature_details=feature_details,
                     score_bucket=score_bucket,
                 )
-                created_predictions.append((bid, result))
+                created_predictions.append((bid, result, b))
                 scored_count += 1
             except HTTPException:
                 raise
             except Exception as e:
                 raise RuntimeError(f"Failed to score behavior {bid}: {str(e)}")
 
-        for bid, pred in created_predictions:
+        for _, pred, _ in created_predictions:
             db.add(pred)
-            results.append(BatchScoreItem(
-                behavior_id=bid,
-                status="scored",
-                prediction=pred
-            ))
 
         try:
             db.commit()
         except IntegrityError:
             db.rollback()
-            conflict_buckets = {(p.user_id, p.behavior_id, p.score_bucket) for _, p in created_predictions}
+            api_elapsed_ms = (time.perf_counter() - api_start) * 1000
+            conflict_buckets = {(p.user_id, p.behavior_id, p.score_bucket) for _, p, _ in created_predictions}
             logger.warning(
                 "Batch scoring duplicate blocked by unique constraint: %d candidate(s), "
-                "user_id/behavior_id/bucket tuples=%s (window=%ds)",
-                len(conflict_buckets), sorted(conflict_buckets), SCORE_WINDOW_SECONDS,
+                "user_id/behavior_id/bucket tuples=%s (window=%ds) | total_api_time=%.3f ms",
+                len(conflict_buckets), sorted(conflict_buckets), SCORE_WINDOW_SECONDS, api_elapsed_ms,
             )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -294,14 +300,32 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
                 ),
             ) from None
 
-        for item in results:
-            if item.status == "scored" and item.prediction:
-                db.refresh(item.prediction)
+        scored_items = []
+        for bid, pred, b in created_predictions:
+            db.refresh(pred)
+            pred.behavior = b
+            scored_items.append(BatchScoreItem(
+                behavior_id=bid,
+                status="scored",
+                prediction=pred
+            ))
+
+        results = failed_items + skipped_items + scored_items
 
     except Exception as e:
         db.rollback()
+        api_elapsed_ms = (time.perf_counter() - api_start) * 1000
+        logger.error(
+            "POST /predictions/batch-score failed in %.3f ms | total=%d, error=%s",
+            api_elapsed_ms, len(behavior_ids), str(e),
+        )
         raise HTTPException(status_code=500, detail=f"Batch scoring failed, transaction rolled back: {str(e)}")
 
+    api_elapsed_ms = (time.perf_counter() - api_start) * 1000
+    logger.info(
+        "POST /predictions/batch-score completed in %.3f ms | total=%d, scored=%d, skipped=%d, failed=%d",
+        api_elapsed_ms, len(behavior_ids), scored_count, skipped_count, failed_count,
+    )
     return BatchScoreResponse(
         total=len(behavior_ids),
         scored=scored_count,

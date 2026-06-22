@@ -1,14 +1,16 @@
 import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from database import engine, Base
+from sqlalchemy import text
+
 import models
 from auth import router as auth_router
-from routers.users import router as users_router
+from database import Base, engine
 from routers.behaviors import router as behaviors_router
 from routers.predictions import router as predictions_router
 from routers.reports import router as reports_router
-from sqlalchemy import text
+from routers.users import router as users_router
 
 logging.basicConfig(level=logging.INFO)
 

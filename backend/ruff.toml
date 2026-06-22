@@ -1,0 +1,34 @@
+line-length = 120
+
+[lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "T20",
+    "PT",
+]
+ignore = [
+    "E501",
+    "T201",
+    "B904",
+    "F401",
+    "B008",
+    "B007",
+    "PT003",
+    "SIM108",
+    "UP006",
+    "UP035",
+    "UP045",
+]
+
+[lint.isort]
+known-first-party = ["ml", "routers"]
+
+[format]
+indent-style = "space"
+quote-style = "double"
+line-ending = "lf"

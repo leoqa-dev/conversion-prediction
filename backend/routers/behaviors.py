@@ -1,10 +1,12 @@
 from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
+from auth import get_current_user
 from database import get_db
 from models import User, UserBehavior
-from schemas import BehaviorCreate, BehaviorUpdate, BehaviorOut
-from auth import get_current_user
+from schemas import BehaviorCreate, BehaviorOut, BehaviorUpdate
 
 router = APIRouter(prefix="/behaviors", tags=["behaviors"])
 

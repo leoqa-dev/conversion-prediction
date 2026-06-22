@@ -1,5 +1,10 @@
+import logging
+import time
+from typing import Any, Dict, Tuple
+
 import numpy as np
-from typing import Dict, Tuple, Any
+
+logger = logging.getLogger("ml.scorer")
 
 WEIGHTS = {
     "purchases": 0.35,
@@ -36,6 +41,8 @@ def score_behavior(
     search_queries: int,
     days_since_last_visit: float,
 ) -> Tuple[float, Dict[str, float], Dict[str, Dict[str, Any]]]:
+    start_time = time.perf_counter()
+
     raw = {
         "purchases": purchases,
         "cart_adds": cart_adds,
@@ -63,6 +70,11 @@ def score_behavior(
                 "normalized_value": round(normalized, 4),
                 "weight": WEIGHTS[k],
             }
+        elapsed_ms = (time.perf_counter() - start_time) * 1000
+        logger.info(
+            "score_behavior completed in %.3f ms | score=%.4f | features: page_views=%d, purchases=%d (zero-activity branch)",
+            elapsed_ms, 0.0, page_views, purchases,
+        )
         return 0.0, feature_weights, feature_details
 
     for k in WEIGHTS:
@@ -79,6 +91,13 @@ def score_behavior(
     )
     score = round(float(_sigmoid(linear * 6 - 2)), 4)
     feature_weights = {k: round(WEIGHTS[k] * min(raw[k] / NORMALIZERS[k], 1.0), 4) for k in WEIGHTS}
+
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    logger.info(
+        "score_behavior completed in %.3f ms | score=%.4f | features: page_views=%d, session_duration=%.1fs, purchases=%d, segment=%s",
+        elapsed_ms, score, page_views, session_duration, purchases,
+        classify_segment(score),
+    )
     return score, feature_weights, feature_details
 
 def classify_segment(score: float) -> str:

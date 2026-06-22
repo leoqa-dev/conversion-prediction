@@ -1,11 +1,13 @@
 from typing import List
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+from auth import filter_predictions_by_role, get_current_user
 from database import get_db
-from models import User, PredictionResult
-from schemas import ReportSummary, SegmentDistribution, ScoreTrend, Role
-from auth import get_current_user, filter_predictions_by_role
+from models import PredictionResult, User
+from schemas import ReportSummary, Role, ScoreTrend, SegmentDistribution
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 

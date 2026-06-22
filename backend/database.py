@@ -1,6 +1,7 @@
 import logging
+
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 logger = logging.getLogger("sql_query_counter")
 

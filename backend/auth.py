@@ -1,13 +1,15 @@
 from datetime import datetime, timedelta
 from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
+
 from database import get_db
-from models import User, PredictionResult
-from schemas import UserCreate, UserOut, Token, Role
+from models import PredictionResult, User
+from schemas import Role, Token, UserCreate, UserOut
 
 SECRET_KEY = "8f42a3d1e9c7b6a2f5d8e1c4b7a0d3f6e9c2b5a8d1f4e7c0b3a6d9f2e5c8b1"
 ALGORITHM = "HS256"
