@@ -22,7 +22,26 @@ def _migrate_add_feature_details_column():
             conn.execute(text("ALTER TABLE prediction_results ADD COLUMN feature_details JSON"))
             conn.commit()
 
+def _migrate_add_score_bucket_and_unique_index():
+    with engine.connect() as conn:
+        result = conn.execute(text("PRAGMA table_info(prediction_results)"))
+        columns = [row[1] for row in result.fetchall()]
+        if "score_bucket" not in columns:
+            conn.execute(text("ALTER TABLE prediction_results ADD COLUMN score_bucket INTEGER"))
+            conn.commit()
+
+        idx_result = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='uq_prediction_user_behavior_bucket'"
+        ))
+        if idx_result.fetchone() is None:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX uq_prediction_user_behavior_bucket "
+                "ON prediction_results(user_id, behavior_id, score_bucket)"
+            ))
+            conn.commit()
+
 _migrate_add_feature_details_column()
+_migrate_add_score_bucket_and_unique_index()
 
 app = FastAPI(title="Conversion Prediction API")
 

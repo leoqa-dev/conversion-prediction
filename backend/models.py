@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -31,6 +31,14 @@ class UserBehavior(Base):
 
 class PredictionResult(Base):
     __tablename__ = "prediction_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "behavior_id",
+            "score_bucket",
+            name="uq_prediction_user_behavior_bucket",
+        ),
+    )
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     behavior_id = Column(Integer, ForeignKey("user_behaviors.id"), nullable=True)
@@ -38,6 +46,7 @@ class PredictionResult(Base):
     segment = Column(String, nullable=False)
     feature_weights = Column(JSON, nullable=True)
     feature_details = Column(JSON, nullable=True)
+    score_bucket = Column(Integer, nullable=True)
     predicted_at = Column(DateTime, default=datetime.utcnow)
     user = relationship("User", back_populates="predictions")
     behavior = relationship("UserBehavior", lazy="noload")

@@ -1,7 +1,9 @@
 import logging
+import time
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from database import get_db, reset_query_counter, get_query_count
 from models import User, UserBehavior, PredictionResult
@@ -10,6 +12,12 @@ from auth import get_current_user, filter_predictions_by_role
 from ml.scorer import score_behavior, classify_segment, WEIGHTS
 
 logger = logging.getLogger("predictions.router")
+
+SCORE_WINDOW_SECONDS = 1
+
+
+def _current_score_bucket() -> int:
+    return int(time.time() // SCORE_WINDOW_SECONDS)
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
 
@@ -77,6 +85,7 @@ def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = 
     )
     validate_feature_details(feature_details)
     segment = classify_segment(probability)
+    score_bucket = _current_score_bucket()
     result = PredictionResult(
         user_id=b.user_id,
         behavior_id=b.id,
@@ -84,9 +93,30 @@ def score(behavior_id: int, db: Session = Depends(get_db), current_user: User = 
         segment=segment,
         feature_weights=weights,
         feature_details=feature_details,
+        score_bucket=score_bucket,
     )
     db.add(result)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        logger.warning(
+            "Duplicate score blocked by unique constraint: user_id=%d, behavior_id=%d, score_bucket=%d (window=%ds)",
+            b.user_id, b.id, score_bucket, SCORE_WINDOW_SECONDS,
+        )
+        existing = db.query(PredictionResult).filter(
+            PredictionResult.user_id == b.user_id,
+            PredictionResult.behavior_id == b.id,
+            PredictionResult.score_bucket == score_bucket,
+        ).first()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Duplicate scoring request detected: the same behavior (id={b.id}) "
+                f"has already been scored for user (id={b.user_id}) within the last "
+                f"{SCORE_WINDOW_SECONDS} second(s). Please wait a moment before retrying."
+            ),
+        ) from None
     db.refresh(result)
     return result
 
@@ -220,6 +250,7 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
                 )
                 validate_feature_details(feature_details)
                 segment = classify_segment(probability)
+                score_bucket = _current_score_bucket()
                 result = PredictionResult(
                     user_id=b.user_id,
                     behavior_id=b.id,
@@ -227,6 +258,7 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
                     segment=segment,
                     feature_weights=weights,
                     feature_details=feature_details,
+                    score_bucket=score_bucket,
                 )
                 created_predictions.append((bid, result))
                 scored_count += 1
@@ -243,7 +275,24 @@ def batch_score(payload: BatchScoreRequest, db: Session = Depends(get_db), curre
                 prediction=pred
             ))
 
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            conflict_buckets = {(p.user_id, p.behavior_id, p.score_bucket) for _, p in created_predictions}
+            logger.warning(
+                "Batch scoring duplicate blocked by unique constraint: %d candidate(s), "
+                "user_id/behavior_id/bucket tuples=%s (window=%ds)",
+                len(conflict_buckets), sorted(conflict_buckets), SCORE_WINDOW_SECONDS,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Duplicate scoring detected during batch operation: one or more behavior records "
+                    f"have already been scored within the last {SCORE_WINDOW_SECONDS} second(s). "
+                    "Please wait a moment before retrying."
+                ),
+            ) from None
 
         for item in results:
             if item.status == "scored" and item.prediction:
